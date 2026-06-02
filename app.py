@@ -1,72 +1,86 @@
-import streamlit as tf
-import google.generativeai as genai
+import streamlit as st
+from google import genai
+from google.genai import types
+from google.genai.errors import APIError
 
 # 1. 페이지 설정 및 제목
-st.set_page_config(page_title="수행평가 알리미", page_icon="📅")
-st.title("📅 수행평가 알리미 챗봇")
+st.set_page_config(page_title="수행평가 알리미", page_icon="📝", layout="centered")
+st.title("📝 수행평가 알리미 챗봇")
 st.caption("수행평가 일정 관리, 준비물, 팁 등을 물어보세요!")
 
-# 2. Streamlit Secrets에서 API 키 불러오기 및 설정
-try:
-    if "GEMINI_API_KEY" not in st.secrets:
-        st.error("Secrets에 'GEMINI_API_KEY'가 설정되지 않았습니다. Streamlit 대시보드에서 설정해주세요.")
-        st.stop()
-    
-    genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-except Exception as e:
-    st.error(f"API 키를 설정하는 중 오류가 발생했습니다: {e}")
+# 2. API 키 및 클라이언트 초기화 (Streamlit Secrets 활용)
+if "GEMINI_API_KEY" not in st.secrets:
+    st.error("⚠️ Streamlit Secrets에 'GEMINI_API_KEY'가 설정되지 않았습니다. 서비스 설정에서 API 키를 입력해주세요.")
     st.stop()
 
-# 3. 세션 상태(Session State)로 채팅 기록 초기화
-if "messages" not in st.session_state:
-    st.session_state.messages = [
-        {
-            "role": "assistant", 
-            "content": "안녕하세요! 수행평가 알리미입니다. 어떤 수행평가에 대해 도움이 필요하신가요? (예: 고1 통합과학 수행평가 주제 추천해줘)"
-        }
-    ]
+try:
+    # google-genai 최신 SDK 스타일로 클라이언트 초기화
+    client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
+except Exception as e:
+    st.error(f"⚠️ API 클라이언트 초기화 중 오류가 발생했습니다: {e}")
+    st.stop()
 
-# 4. 이전 채팅 기록 표시
+# 3. 세션 상태(Session State)를 활용한 채팅 기록 유지
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+# 4. 앱을 처음 켤 때 챗봇에게 페르소나 주입 (System Instruction)
+# gemini-2.5-flash-lite는 시스템 지침을 지원합니다.
+system_instruction = """
+당신은 고등학생들의 수행평가를 전반적으로 도와주는 '수행평가 알리미'입니다.
+학생들이 수행평가 일정 관리, 과제 작성 팁, 발표 자료 준비 방법, 과목별 핵심 체크리스트 등을 물어보면
+친절하고, 명확하며, 격려하는 어조로 답변해주세요. 
+답변을 할 때는 가독성이 좋게 이모지나 불릿 포인트를 적절히 사용해 주세요.
+"""
+
+# 5. 기존 채팅 기록 화면에 표시
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-# 5. 사용자 입력 받기
-if user_input := st.chat_input("수행평가에 대해 무엇이든 물어보세요!"):
+# 6. 사용자 입력 처리
+if user_input := st.chat_input("예: '확률과 통계 수행평가 보고서 주제 추천해줘'"):
     
-    # 사용자의 메시지를 화면에 표시 및 세션에 저장
+    # 사용자가 입력한 메시지 화면에 표시 및 기록 저장
     with st.chat_message("user"):
         st.markdown(user_input)
     st.session_state.messages.append({"role": "user", "content": user_input})
 
-    # 6. Gemini 모델을 통한 답변 생성 (오류 처리 포함)
+    # 챗봇의 답변 생성 과정
     with st.chat_message("assistant"):
         message_placeholder = st.empty()
-        message_placeholder.markdown("🔄 생각 중...")
         
         try:
-            # gemini-2.5-flash-lite 모델 설정
-            model = genai.GenerativeModel(
-                model_name="gemini-2.5-flash-lite",
-                system_instruction="당신은 학생들의 수행평가를 도와주는 '수행평가 알리미'입니다. 친절하고 명확하게 답변해야 하며, 수행평가 일정 관리법, 과목별 보고서 작성 팁, 발표 자료 준비 가이드 등을 전문적으로 안내해주세요."
+            # API 호출 및 스트리밍 답변 생성
+            # 요구사항대로 'gemini-2.5-flash-lite' 모델 지정
+            response = client.models.generate_content_stream(
+                model='gemini-2.5-flash-lite',
+                contents=user_input,
+                config=types.GenerateContentConfig(
+                    system_instruction=system_instruction,
+                    temperature=0.7,
+                )
             )
             
-            # 대화 맥락을 유지하기 위해 세션 기록을 Gemini 형식으로 변환
-            chat_history = []
-            for msg in st.session_state.messages[:-1]:  # 방금 넣은 user_input 제외 전까지
-                role = "user" if msg["role"] == "user" else "model"
-                chat_history.append({"role": role, "parts": [msg["content"]]})
+            # 스트리밍 텍스트 실시간 누적
+            full_response = ""
+            for chunk in response:
+                full_response += chunk.text
+                message_placeholder.markdown(full_response + "▌")
             
-            # 채팅 세션 시작 및 메시지 전송
-            chat = model.start_chat(history=chat_history)
-            response = chat.send_message(user_input)
+            # 최종 답변 확정 표시
+            message_placeholder.markdown(full_response)
             
-            # 결과 출력 및 저장
-            ai_response = response.text
-            message_placeholder.markdown(ai_response)
-            st.session_state.messages.append({"role": "assistant", "content": ai_response})
+            # 챗봇의 답변도 기록에 저장
+            st.session_state.messages.append({"role": "assistant", "content": full_response})
             
-        except Exception as e:
-            error_msg = f"❌ 답변을 생성하는 중 오류가 발생했습니다: {e}"
+        except APIError as ae:
+            # 구글 API 관련 명시적 에러 처리
+            error_msg = f"❌ Gemini API 오류가 발생했습니다: {ae.message}"
             message_placeholder.markdown(error_msg)
-            # 오류 메시지는 세션 기록에 저장하지 않음
+            st.sidebar.error(f"상세 에러: {ae}")
+        except Exception as e:
+            # 기타 예외 처리 (네트워크 오류 등)
+            error_msg = "❌ 답변을 생성하는 중 알 수 없는 오류가 발생했습니다. 잠시 후 다시 시도해주세요."
+            message_placeholder.markdown(error_msg)
+            st.sidebar.error(f"일반 에러: {e}")
