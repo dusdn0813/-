@@ -1,84 +1,72 @@
-import streamlit as st
-import pandas as pd
-import json
-import os
+import streamlit as tf
+import google.generativeai as genai
 
-# 데이터 저장 파일
-DATA_FILE = "tasks_web.json"
+# 1. 페이지 설정 및 제목
+st.set_page_config(page_title="수행평가 알리미", page_icon="📅")
+st.title("📅 수행평가 알리미 챗봇")
+st.caption("수행평가 일정 관리, 준비물, 팁 등을 물어보세요!")
 
-# 데이터 로드 함수
-def load_data():
-    if os.path.exists(DATA_FILE):
-        try:
-            with open(DATA_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except:
-            return []
-    return []
-
-# 데이터 저장 함수
-def save_data(data):
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=4)
-
-# Streamlit 앱 제목
-st.set_page_config(page_title="수행평가 관리자", layout="centered")
-st.title("📋 수행평가 일정 관리 앱")
-st.write("학습용 수행평가 일정을 기록하고 관리해보세요!")
-
-# 세션 상태 초기화 (데이터 유지)
-if "tasks" not in st.session_state:
-    st.session_state.tasks = load_data()
-
-# --- 입력 폼 세션 ---
-with st.form(key="task_form", clear_on_submit=True):
-    st.subheader("새로운 수행평가 추가")
-    col1, col2 = st.columns(2)
+# 2. Streamlit Secrets에서 API 키 불러오기 및 설정
+try:
+    if "GEMINI_API_KEY" not in st.secrets:
+        st.error("Secrets에 'GEMINI_API_KEY'가 설정되지 않았습니다. Streamlit 대시보드에서 설정해주세요.")
+        st.stop()
     
-    with col1:
-        subject = st.text_input("과목명", placeholder="예: 수학, 영어")
-    with col2:
-        date = st.date_input("마감일")
-        
-    content = st.text_input("수행평가 내용", placeholder="예: 교과서 문제 풀이 제출")
-    submit_button = st.form_submit_button(label="추가하기")
+    genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+except Exception as e:
+    st.error(f"API 키를 설정하는 중 오류가 발생했습니다: {e}")
+    st.stop()
 
-# 추가 버튼 클릭 시 로직
-if submit_button:
-    if subject.strip() == "" or content.strip() == "":
-        st.warning("과목명과 내용을 모두 입력해주세요!")
-    else:
-        new_task = {
-            "과목": subject,
-            "수행평가 내용": content,
-            "마감일": str(date)
+# 3. 세션 상태(Session State)로 채팅 기록 초기화
+if "messages" not in st.session_state:
+    st.session_state.messages = [
+        {
+            "role": "assistant", 
+            "content": "안녕하세요! 수행평가 알리미입니다. 어떤 수행평가에 대해 도움이 필요하신가요? (예: 고1 통합과학 수행평가 주제 추천해줘)"
         }
-        st.session_state.tasks.append(new_task)
-        save_data(st.session_state.tasks)
-        st.success(f"'{subject}' 수행평가 일정이 추가되었습니다!")
+    ]
 
-# --- 일정 출력 및 삭제 세션 ---
-st.write("---")
-st.subheader("현재 수행평가 일정 목록")
+# 4. 이전 채팅 기록 표시
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
 
-if st.session_state.tasks:
-    # 데이터프레임으로 변환 후 마감일 순 정렬
-    df = pd.DataFrame(st.session_state.tasks)
-    df = df.sort_values(by="마감일").reset_index(drop=True)
+# 5. 사용자 입력 받기
+if user_input := st.chat_input("수행평가에 대해 무엇이든 물어보세요!"):
     
-    # 표 출력
-    st.dataframe(df, use_container_width=True)
-    
-    # 삭제 기능
-    st.write("### 일정 삭제하기")
-    delete_options = [f"[{t['마감일']}] {t['과목']} - {t['수행평가 내용']}" for t in st.session_state.tasks]
-    selected_to_delete = st.selectbox("삭제할 항목을 선택하세요", delete_options)
-    
-    if st.button("선택 항목 삭제", type="primary"):
-        idx = delete_options.index(selected_to_delete)
-        deleted_item = st.session_state.tasks.pop(idx)
-        save_data(st.session_state.tasks)
-        st.info(f"'{deleted_item['과목']}' 일정이 삭제되었습니다.")
-        st.rerun()
-else:
-    st.info("등록된 수행평가 일정이 없습니다. 위에 새로 추가해보세요!")ㅍ
+    # 사용자의 메시지를 화면에 표시 및 세션에 저장
+    with st.chat_message("user"):
+        st.markdown(user_input)
+    st.session_state.messages.append({"role": "user", "content": user_input})
+
+    # 6. Gemini 모델을 통한 답변 생성 (오류 처리 포함)
+    with st.chat_message("assistant"):
+        message_placeholder = st.empty()
+        message_placeholder.markdown("🔄 생각 중...")
+        
+        try:
+            # gemini-2.5-flash-lite 모델 설정
+            model = genai.GenerativeModel(
+                model_name="gemini-2.5-flash-lite",
+                system_instruction="당신은 학생들의 수행평가를 도와주는 '수행평가 알리미'입니다. 친절하고 명확하게 답변해야 하며, 수행평가 일정 관리법, 과목별 보고서 작성 팁, 발표 자료 준비 가이드 등을 전문적으로 안내해주세요."
+            )
+            
+            # 대화 맥락을 유지하기 위해 세션 기록을 Gemini 형식으로 변환
+            chat_history = []
+            for msg in st.session_state.messages[:-1]:  # 방금 넣은 user_input 제외 전까지
+                role = "user" if msg["role"] == "user" else "model"
+                chat_history.append({"role": role, "parts": [msg["content"]]})
+            
+            # 채팅 세션 시작 및 메시지 전송
+            chat = model.start_chat(history=chat_history)
+            response = chat.send_message(user_input)
+            
+            # 결과 출력 및 저장
+            ai_response = response.text
+            message_placeholder.markdown(ai_response)
+            st.session_state.messages.append({"role": "assistant", "content": ai_response})
+            
+        except Exception as e:
+            error_msg = f"❌ 답변을 생성하는 중 오류가 발생했습니다: {e}"
+            message_placeholder.markdown(error_msg)
+            # 오류 메시지는 세션 기록에 저장하지 않음
